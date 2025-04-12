@@ -6,81 +6,86 @@
 //
 
 import SwiftUI
-import CoreData
+import CoreML
+import Vision
 
 struct ContentView: View {
-    @Environment(\.managedObjectContext) private var viewContext
-
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Item.timestamp, ascending: true)],
-        animation: .default)
-    private var items: FetchedResults<Item>
+    @State private var selectedImage: UIImage?
+    @State private var showImagePicker = false
+    @State private var predictions: [(String, Double)] = []
 
     var body: some View {
-        NavigationView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp!, formatter: itemFormatter)")
-                    } label: {
-                        Text(item.timestamp!, formatter: itemFormatter)
-                    }
+        VStack {
+            if let selectedImage = selectedImage {
+                Image(uiImage: selectedImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 300)
+
+                Button("MobileNetV2") {
+                    classifyImage(modelName: "MobileNetV2")
                 }
-                .onDelete(perform: deleteItems)
+
+                Button("ResNet50") {
+                    classifyImage(modelName: "Resnet50")
+                }
+
+                Button("FastViT") {
+                    classifyImage(modelName: "FastViT")
+                }
+
+                List(predictions, id: \.0) { result in
+                    Text("\(result.0): \(String(format: "%.2f", result.1 * 100))%")
+                }
+            } else {
+                Text("Select an image")
+                    .padding()
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
+
+            Button("Pick Image") {
+                showImagePicker = true
             }
-            Text("Select an item")
+            .padding()
+        }
+        .sheet(isPresented: $showImagePicker) {
+            ImagePicker(image: $selectedImage)
         }
     }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(context: viewContext)
-            newItem.timestamp = Date()
+    func classifyImage(modelName: String) {
+        guard let image = selectedImage,
+              let ciImage = CIImage(image: image) else {
+            return
+        }
 
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
+        predictions = []
+
+        let config = MLModelConfiguration()
+        let model: VNCoreMLModel
+
+        do {
+            switch modelName {
+            case "MobileNetV2":
+                model = try VNCoreMLModel(for: MobileNetV2(configuration: config).model)
+            case "Resnet50":
+                model = try VNCoreMLModel(for: Resnet50(configuration: config).model)
+            case "FastViT":
+                model = try VNCoreMLModel(for: FastViTMA36F16(configuration: config).model)
+            default:
+                return
             }
+
+            let request = VNCoreMLRequest(model: model) { request, _ in
+                if let results = request.results as? [VNClassificationObservation] {
+                    self.predictions = results.prefix(5).map { ($0.identifier, Double($0.confidence)) }
+                }
+            }
+
+            let handler = VNImageRequestHandler(ciImage: ciImage)
+            try handler.perform([request])
+
+        } catch {
+            print("Failed to classify image: \(error)")
         }
     }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            offsets.map { items[$0] }.forEach(viewContext.delete)
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
-        }
-    }
-}
-
-private let itemFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .short
-    formatter.timeStyle = .medium
-    return formatter
-}()
-
-#Preview {
-    ContentView().environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
 }
